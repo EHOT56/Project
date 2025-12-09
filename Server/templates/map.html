@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Map {{ session_id }}</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #111;
+      font-family: system-ui, sans-serif;
+      color: #fff;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    /* Контейнер карты: просто блок по центру, без left/top */
+    #map-container {
+      position: relative;
+      background: #000;
+      transform-origin: center center; /* масштабируем от центра */
+    }
+
+    #map-image {
+      display: block;
+      image-rendering: crisp-edges;
+    }
+
+    #player-layer {
+      position: absolute;
+      left: 0;
+      top: 0;
+      pointer-events: none;
+    }
+
+    .player-dot {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: #ff4d4d;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      transform: translate(-50%, -50%);
+    }
+
+    .player-label {
+      position: absolute;
+      transform: translate(-50%, -120%);
+      font-size: 11px;
+      white-space: nowrap;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="map-container">
+    <img id="map-image" src="" alt="Map">
+    <div id="player-layer"></div>
+  </div>
+
+  <script>
+    // Границы карты в координатах игры:
+    // (70,  64)  - левый верхний
+    // (70, 165)  - левый нижний
+    // (195, 165) - правый нижний
+    // (195,  64) - правый верхний
+    const WORLD_MIN_X = 70.0;
+    const WORLD_MAX_X = 195.0;
+    const WORLD_MIN_Y = 64.0;
+    const WORLD_MAX_Y = 165.0;
+
+    // Масштабирование карты по экрану с сохранением пропорций
+    function scaleMapToScreen() {
+      const img = document.getElementById("map-image");
+      const container = document.getElementById("map-container");
+
+      const mapW = img.naturalWidth;
+      const mapH = img.naturalHeight;
+      if (!mapW || !mapH) return;
+
+      const screenW = window.innerWidth;
+      const screenH = window.innerHeight;
+
+      const scale = Math.min(screenW / mapW, screenH / mapH);
+
+      container.style.transform = `scale(${scale})`;
+    }
+
+    function worldToScreen(x, y, mapWidth, mapHeight) {
+      const nx = (x - WORLD_MIN_X) / (WORLD_MAX_X - WORLD_MIN_X);
+      const ny = (y - WORLD_MIN_Y) / (WORLD_MAX_Y - WORLD_MIN_Y);
+
+      const cx = Math.min(Math.max(nx, 0), 1);
+      const cy = Math.min(Math.max(ny, 0), 1);
+
+      const sx = cx * mapWidth;
+      const sy = cy * mapHeight;  // без инверсии Y — под твою карту
+
+      return [sx, sy];
+    }
+
+    const sessionId = "{{ session_id }}";
+    const staticBase = "{{ url_for('static', filename='') }}";
+
+    async function fetchData() {
+      try {
+        const res = await fetch(`/session/${sessionId}`);
+        if (!res.ok) return null;
+        return await res.json();
+      } catch (e) {
+        console.error(e);
+        return null;
+      }
+    }
+
+    function setMapImage(mapName) {
+      if (!mapName) return;
+
+      const img = document.getElementById("map-image");
+      const layer = document.getElementById("player-layer");
+      const container = document.getElementById("map-container");
+
+      // не перезагружаем, если карта та же самая
+      if (img.dataset.mapName === mapName) return;
+
+      img.onload = () => {
+        const w = img.naturalWidth;
+        const h = img.naturalHeight;
+        if (!w || !h) return;
+
+        // задаём реальные размеры контейнера и слоя
+        container.style.width = w + "px";
+        container.style.height = h + "px";
+        layer.style.width = w + "px";
+        layer.style.height = h + "px";
+
+        // масштаб под экран
+        scaleMapToScreen();
+      };
+
+      img.src = staticBase + "maps/" + mapName + ".png";
+      img.dataset.mapName = mapName;
+    }
+
+    function renderPlayers(players) {
+      const layer = document.getElementById("player-layer");
+      const img = document.getElementById("map-image");
+
+      layer.innerHTML = "";
+      if (!players || !Array.isArray(players)) return;
+
+      const mapWidth  = img.naturalWidth  || layer.clientWidth;
+      const mapHeight = img.naturalHeight || layer.clientHeight;
+      if (!mapWidth || !mapHeight) return;
+
+      players.forEach(p => {
+        // HP: поддержка hp ИЛИ health
+        let hp = null;
+        if (typeof p.hp === "number") {
+          hp = p.hp;
+        } else if (typeof p.health === "number") {
+          hp = p.health;
+        }
+
+        if (hp === null || hp <= 0) {
+          return; // не рисуем мёртвых
+        }
+
+        // pos = [x, y, z] → карта по x,z
+        const wx = p.pos?.[0] ?? 0;  // X
+        const wy = p.pos?.[2] ?? 0;  // Z
+
+        const [x, y] = worldToScreen(wx, wy, mapWidth, mapHeight);
+
+        // Цвет по команде: 0 — красный, 1 — синий
+        let color;
+        if (p.team === 1) {
+          color = "#3d7bff"; // синий
+        } else {
+          color = "#ff4d4d"; // красный
+        }
+
+        const dot = document.createElement("div");
+        dot.className = "player-dot";
+        dot.style.background = color;
+        dot.style.left = `${x}px`;
+        dot.style.top = `${y}px`;
+        layer.appendChild(dot);
+
+        const label = document.createElement("div");
+        label.className = "player-label";
+        const name = p.name || "Unknown";
+        label.textContent = `${name} (${hp} HP)`;
+        label.style.left = `${x}px`;
+        label.style.top = `${y}px`;
+        label.style.color = color;
+        layer.appendChild(label);
+      });
+    }
+
+    async function updateLoop() {
+      const data = await fetchData();
+      if (!data) return;
+
+      if (data.map) {
+        setMapImage(data.map);
+      }
+      if (data.players) {
+        renderPlayers(data.players);
+      }
+    }
+
+    window.addEventListener("resize", scaleMapToScreen);
+
+    updateLoop();
+    setInterval(updateLoop, 50);
+  </script>
+
+</body>
+</html>
